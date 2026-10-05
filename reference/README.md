@@ -24,9 +24,11 @@ reference/
   snail_labyrinth/     the implementation package
     tiles.py           TM-1 .. TM-10: the tile model and connectivity
     transit.py         TM-11, TM-12: the transit graph G_T
+    geometry.py        GE-1 .. GE-8: Hub, Apron, spawns, Start Pads
   tests/
     test_tiles.py
     test_transit.py
+    test_geometry.py
   OPEN_QUESTIONS.md     ambiguities found in the spec and how they were resolved
   PROGRESS.md           what's implemented, what's next
 ```

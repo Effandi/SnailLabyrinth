@@ -3,7 +3,21 @@
 Read this file first if you are resuming this build. It records exactly
 what is implemented, what is tested, and what the next increment should be.
 
-## Status: increment 1 of N — tile model, connectivity, transit graph
+## Status: increment 2 of N — board geometry and spawns
+
+> **Note on process (increment 2):** this increment's PR (`reference:
+> board geometry and spawns (GE-1..GE-8)`) is stacked on top of increment
+> 1's PR (`reference/tile-model-transit-graph`, #1 on GitHub), which was
+> still open/unmerged when this run started. Two independent scheduled runs
+> both built increment 1 concurrently under slightly different branch
+> names/APIs; this run detected the collision, discarded its own duplicate
+> of increment 1, and continued on top of the version already pushed and
+> under review rather than compete with it. If you are a human merging
+> these: merge #1 first, then this PR's base will need retargeting to
+> `main` (or just merge in order, which resolves it the same way). If you
+> are the next scheduled run: check for open, unmerged `reference/*` PRs
+> before assuming `main` is the base to build on — `PROGRESS.md` only
+> reflects what has been *written*, not what has been *merged*.
 
 ### Implemented
 
@@ -38,6 +52,39 @@ what is implemented, what is tested, and what the next increment should be.
   `OPEN_QUESTIONS.md` OQ-1 for the one place this module diverges from a
   fully literal reading of the spec's `source()` formula, and why.
 
+**`snail_labyrinth/geometry.py`** — spec section 2:
+
+- `GE-1` — `hub_cells(n)` (4 cells for even N, 1 for odd N) and
+  `apron_cells(n)` (orthogonal Hub neighbours outside Hub; 8 cells even, 4
+  odd), cross-checked against the section 3.5 defaults table for all five
+  preset sizes.
+- `GE-2` — `place_fixed_geometry` forces every Hub cell to mask 15 +
+  `FINISH_LOCKED`. (The "untargetable by all six cards" and "entering sets
+  `Finished`" halves of `GE-2` are `CD-*` / `MV-*` concerns, not yet wired
+  up — there is no card system or movement state machine yet for them to
+  attach to.)
+- `GE-3` — satisfied by construction: Apron cells get no special flags, so
+  they stay ordinary, rotatable, rockable cells.
+- `GE-5` — `spawn_offset(n)` (the clamped `m`) and `spawns(n)` (`S0..S3`),
+  matching the section 3.5 table for all five preset sizes.
+- `GE-6` — `rho(pos, n)`, the 90-degree rotation; tested as `rho: S[k] ->
+  S[k+1 mod 4]` for every preset size, and that the orbit has exactly 4
+  distinct members (simple transitivity).
+- `GE-7` — antipodal pairing (`S0+S2 == S1+S3 == (N-1, N-1)`) tested
+  directly rather than left as a geometric claim.
+- `GE-8` — `start_pad_mask(k)` (immutable T-Junction missing only the
+  outward direction — cross-checked against `TM-3`'s own TEE table: masks
+  7/14/13/11 are documented there as missing W/N/E/S, which is exactly
+  `start_pad_mask(3)/(0)/(1)/(2)`) and `start_pad_inward_neighbour`, both
+  wired into `place_fixed_geometry` (`SPAWN_PAD` and `ROCK_PROTECTED`
+  respectively). `GE-4` is informational only (no code: it just explains
+  *why* `CD-13` condition 7 has room to bind on Apron quality rather than
+  raw count) and needed nothing here.
+- Integration test: a hand-carved N=8 corridor from each of the 4 spawns to
+  the Hub, run through `TransitGraph.reachable_to_hub` — plus the negative
+  control (fixed geometry alone, no corridors, reaches nothing), confirming
+  the positive result isn't an artefact of the geometry functions.
+
 ### Not yet implemented
 
 Everything else. In particular:
@@ -45,12 +92,11 @@ Everything else. In particular:
 - `TM-4`, `TM-7` — trivial/rendering-only, nothing to implement in a headless
   core (Rock-is-mask-0 is already the only representation; `TM-7` is a
   rendering rule with no simulation-state counterpart).
-- Section 2 (`GE-*`) — board geometry: the Hub, Apron, the four spawns and
-  their C4 symmetry, Start Pads. **This is the next increment.**
-- Section 3 (`MG-*`) — map generation. Depends on `GE-*` for Hub/spawn/Apron
-  cell sets and on `TransitGraph` for `SolveCost` (needs the weighted
-  `TAU`/`ACT` cost model on top of the unweighted BFS built so far — a
-  Dijkstra variant of `TransitGraph`, not a rewrite of it).
+- Section 3 (`MG-*`) — map generation. **This is the next increment.**
+  Depends on `GE-*` (now implemented) for Hub/spawn/Apron cell sets and on
+  `TransitGraph` for `SolveCost` (needs the weighted `TAU`/`ACT` cost model
+  on top of the unweighted BFS built so far — a Dijkstra variant of
+  `TransitGraph`, not a rewrite of it).
 - Section 4 (`MV-*`) — the movement state machine. Depends on `GE-*` (Hub
   cells, Start Pads) and reuses `Board.usable_exits` for `resolveExit`
   (`MV-7`) — note `MV-7`/`MV-8` explicitly use `usableExits`, i.e. **plain
@@ -76,21 +122,35 @@ Everything else. In particular:
 
 ### Next increment
 
-**Board geometry and spawns: `GE-1` .. `GE-8`.**
+**Map generation: `MG-1` .. `MG-24`.** This is the biggest single increment
+in the build order so far; consider splitting it further (e.g. layer 1+2
+placement first, then the rock-accretion/repair loop, then collectibles)
+rather than doing all of section 3 in one pass.
 
-- Hub cell set (`GE-1`, `GE-2`): 4 cells for even N, 1 for odd N, all forced
-  to mask 15 + `FINISH_LOCKED`, untargetable by all cards (the untargetable
-  part is a `CD-*` concern to wire in later; this increment should at least
-  produce the correct cell set and apply the flag/mask).
-- Apron cell set (`GE-1`, `GE-3`): orthogonal neighbours of Hub, outside Hub.
-- Spawn cell set (`GE-5`, `GE-6`): the four `S[k]`, and a test that they are
-  exactly the C4 orbit of `(m, 0)` under `rho(x,y) = (N-1-y, x)`, for every
-  preset size in the spec's section 3.5 table (8, 12, 16, 20, 24).
-- Start Pads (`GE-8`): immutable T-Junction, three non-outward openings,
-  `SPAWN_PAD` flag, and the inward-neighbour `ROCK_PROTECTED` flag.
-- Tests should use `TransitGraph.reachable_to_hub` from each spawn on a
-  hand-built board to sanity-check the geometry before map generation
-  (`MG-*`) exists to generate a full board automatically.
+- `MG-2`/`MG-3`: the weighted cost model (`TAU`, `ACT`, `SolveCost`) is a
+  Dijkstra variant over the *same* `G_T` nodes `transit.py` already defines
+  — extend `TransitGraph` (e.g. a `solve_costs()` method doing one reverse
+  Dijkstra from the Hub) rather than duplicating the graph structure.
+  Everything must stay integer arithmetic (`MG-2`: "All generator arithmetic
+  is integer").
+- `MG-5`: `geometry.place_fixed_geometry` already does the "Hub/Start Pads
+  forced before any other placement" step this increment needs as its
+  starting point.
+- `MG-16`-`MG-19`: layer 1 (C4-symmetric corridors, reusing `geometry.rho`
+  to replicate a quarter-turn fundamental domain), layer 2 (stateless
+  per-cell hashing — `CellHash` per `MG-24`, not Python's `random` module,
+  so results are reproducible across platforms), layer 3 (rock accretion,
+  validated via `TransitGraph` on every accept), dead-end repair (`MG-18`),
+  and the symmetry repair loop (`MG-19`).
+- `MG-24`: determinism scaffolding (`splitmix64`, `fnv1a64`, `pcg32`,
+  labelled stream splitting) is foundational and probably belongs in its
+  own small module (e.g. `rng.py`) that `MG-*`'s generator and later the
+  per-player card streams (`CD-17`) both import, rather than being
+  reimplemented per-caller.
+- Tests: `MG-5`..`MG-15`'s guarantees hold for generated maps; regenerate
+  twice from the same seed and compare `MapDigest` (determinism); the 4
+  spawns' `SolveCost` spread satisfies `MG-11`, reusing `geometry.py`'s
+  already-tested spawn/Hub cell sets.
 
 ### How to verify this increment
 
@@ -99,5 +159,5 @@ cd reference
 python3 -m unittest discover -v
 ```
 
-Last run: 44 tests, all passing, 0 failures, 0 errors (see the PR for the
-captured output).
+Last run: 64 tests, all passing, 0 failures, 0 errors (44 from increment 1
++ 20 new in `test_geometry.py`; see the PR for the captured output).
