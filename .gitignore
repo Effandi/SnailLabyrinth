@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Godot (engine cache / user output; BO-3)
+.godot/
+*.translation
+export_presets.cfg
+*.import
+
+# Editor
+.vscode/
+.idea/
