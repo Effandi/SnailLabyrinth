@@ -95,3 +95,83 @@ permanently uncrossable, `TM-9`) and leaves the actual legality predicate
 `before_mask != after_mask`, not as a connectivity comparison. Not a
 resolved ambiguity so much as a forward pointer, recorded so the next
 increment doesn't have to rediscover the connection between the two rules.
+
+---
+
+## OQ-3 — `MG-2`'s `TAU[c][a][b]` formula uses `ori(c)` and `MASK[shape(c)][o]`,
+## neither of which this increment gives a concrete representation
+
+**The literal formula:**
+
+```
+TAU[c][a][b] = min over o of ACT[(o - ori(c)) mod 4] where MASK[shape(c)][o] ⊇ {a,b}
+```
+
+`ori(c)` ("the current orientation index of cell `c`, 0..3, relative to some
+canonical reference mask for its shape") and `MASK[shape][o]` ("the mask you
+get by rotating that canonical reference `o` quarter-turns") are never
+defined concretely elsewhere in the document — there is no stated convention
+for which mask is "canonical" per shape, nor for how `ori` is computed for a
+shape whose rotation period is less than 4 (Straight repeats every 2 steps;
+Rock and Cross are fixed points).
+
+**Resolution implemented (`transit.tau_milli`): re-derive the formula over
+quarter-turn deltas from the cell's own current mask, with no canonical
+reference and no `ori()` at all.** For any `o`, by definition `MASK[shape(c)]
+[o] == cw^o(canonical)`, and `ori(c)` is defined by `cw^ori(c)(canonical) ==
+mask[c]`. Substituting one into the other: `MASK[shape(c)][o]` evaluated at
+`Delta = (o - ori(c)) mod 4` equals `cw^Delta(mask[c])`, **for every `o`** —
+the canonical reference and `ori(c)` cancel out algebraically regardless of
+what convention you'd have picked for either. So the whole formula collapses
+to: let `Delta` itself range over `0..3` and test `cw^Delta(mask[c])` for the
+pair `{a,b}` directly, taking the minimum `ACT[Delta]` over the `Delta`s that
+qualify. `tau_milli(mask, a, b)` implements exactly that, and returns `None`
+(infinite cost) exactly when no `Delta` qualifies, i.e. exactly when
+`carries(mask, a, b)` is false — this is checked directly in
+`tests/test_transit.py::WeightedCostModelTests::test_MG2_tau_milli_is_none_exactly_when_carries_is_false`.
+
+This is a re-expression, not an interpretive choice: the two formulas are
+provably identical for every possible canonical-mask/`ori` convention, so
+there is nothing left to get wrong by picking one.
+
+---
+
+## OQ-4 — `MG-2`'s Dijkstra edge weight and its own reported scalar `C` use
+## two different weightings of `R` and `L`
+
+**The tension.** `MG-2` states:
+
+```
+edgeCost = TAU[v][a][b] + STEP_MILLI
+SolveCost(s) = shortest-path distance in G_T from source(s) to any HUB cell
+             = the pair (R = card-actions, L = tiles), scalar C = 2·R + L  cost units (CU)
+```
+
+Summing `edgeCost` along a path gives `ΣTAU + L·STEP_MILLI`, i.e. a 1:1
+weighting of `R` (in milli-card-actions) against `L` (in milli-tiles, since
+`STEP_MILLI` is added once per edge). But the reported scalar is `2·R + L` —
+a 2:1 weighting. A Dijkstra run with `edgeCost` as literally stated therefore
+does not necessarily find the path that *minimises* `2·R + L`; it finds the
+path that minimises `R + L`. These can disagree (a path with one extra tile
+but one fewer required rotation could score better under `R+L` while scoring
+worse, or the same, under `2R+L`, depending on exact values).
+
+**Resolution implemented:** treat the two formulas as serving two different
+purposes, both taken literally rather than reconciled into one weighting.
+`TransitGraph.solve_cost` runs Dijkstra with the stated `edgeCost` (`R+L`
+weighting) to find *a* shortest path — this is the `SolveCost` "shortest-path
+distance" the spec names — and then reports that path's own `(R, L)` pair
+and `C = 2·R + L`, computed from that specific path, as the stated formula
+defines. It does not search for the path that separately minimises `2R+L`.
+
+**Why this reading over re-deriving a 2:1-weighted Dijkstra:** the spec gives
+`edgeCost` as a single, explicit, named formula for the graph traversal, and
+separately gives `C` as a labelled *reporting* statistic ("scalar C = 2R+L
+cost units"), not as a second edge-weight formula to re-run Dijkstra with.
+Nothing in `§3` asks for two different shortest-path searches per spawn. If
+a future increment (`MG-8`'s concrete per-size bounds, `MG-11`'s ratio, or
+the accretion/repair loop in `MG-17`/`MG-19`, all of which consume `C`)
+reveals that this disagreement actually changes which map configurations
+pass or fail those guarantees, revisit this entry before that increment
+ships — it is the one place the two SolveCost formulas could, in principle,
+pick different "optimal" routes.

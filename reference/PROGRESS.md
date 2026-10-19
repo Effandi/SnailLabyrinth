@@ -3,21 +3,40 @@
 Read this file first if you are resuming this build. It records exactly
 what is implemented, what is tested, and what the next increment should be.
 
-## Status: increment 2 of N — board geometry and spawns
+## Status: increment 3 of N — the weighted cost model and determinism scaffolding
 
-> **Note on process (increment 2):** this increment's PR (`reference:
-> board geometry and spawns (GE-1..GE-8)`) is stacked on top of increment
-> 1's PR (`reference/tile-model-transit-graph`, #1 on GitHub), which was
-> still open/unmerged when this run started. Two independent scheduled runs
-> both built increment 1 concurrently under slightly different branch
-> names/APIs; this run detected the collision, discarded its own duplicate
-> of increment 1, and continued on top of the version already pushed and
-> under review rather than compete with it. If you are a human merging
-> these: merge #1 first, then this PR's base will need retargeting to
-> `main` (or just merge in order, which resolves it the same way). If you
-> are the next scheduled run: check for open, unmerged `reference/*` PRs
-> before assuming `main` is the base to build on — `PROGRESS.md` only
-> reflects what has been *written*, not what has been *merged*.
+> **Note on process — read this before opening another PR.** As of this
+> increment there were **three open, unmerged PRs on GitHub, all duplicating
+> increment 1** (`reference: tile model, connectivity, transit graph`),
+> built by three different scheduled runs that each started from `main`
+> without checking for prior unmerged work: #1 (`reference/tile-model-transit-graph`),
+> #2 (`reference: board geometry and spawns`, stacked on top of #1's
+> branch — the most advanced of the three, since it also includes `GE-*`),
+> and #3 (`reference/tile-model-and-transit-graph`, an independent redo that
+> never saw #1 or #2). **#1's and #3's transit-graph implementations both
+> have the same real bug**: they feed `TM-12`'s bare `source()` output
+> straight into the same `carries`-gated `edge` rule used for interior
+> nodes, which makes a snail resting on a Dead End permanently unable to
+> reach the Hub in `G_T` — contradicting `AS-3`'s liveness theorem (see
+> `OPEN_QUESTIONS.md` OQ-1). Only the lineage behind #2
+> (`reference/tile-model-transit-graph` -> `reference/board-geometry-spawns`)
+> catches and fixes this. **This run built on top of that lineage** (the
+> correct one), consolidated it into one branch based directly on `main`
+> (`reference/map-generation`), and is opening **one PR against `main`**
+> containing the cumulative, correct state of increments 1-3 together,
+> rather than adding a fourth competing PR. #1 and #3 should be closed as
+> superseded (duplicated, and the less-correct implementation) once this
+> PR is reviewed; #2 should be closed too, since its content is now fully
+> included here against the right base.
+>
+> **If you are the next scheduled run: before writing any code, run `git
+> fetch origin` and check for open `reference/*` branches/PRs — do not
+> assume `main` reflects all prior work.** This file only reflects what has
+> been *written* to the branch it lives on, not what every other open PR
+> contains. If you find more than one plausible branch to build on, run
+> each one's test suite and prefer the one that passes the most tests /
+> has no known open correctness bug recorded in its own `OPEN_QUESTIONS.md`
+> — do not just pick the most recently pushed one.
 
 ### Implemented
 
@@ -85,6 +104,60 @@ what is implemented, what is tested, and what the next increment should be.
   control (fixed geometry alone, no corridors, reaches nothing), confirming
   the positive result isn't an artefact of the geometry functions.
 
+**`snail_labyrinth/transit.py`, extended this increment** — spec section 3.1, `MG-2`/`MG-3`:
+
+- `ACT_MILLI`/`STEP_MILLI` — the spec's authored cost-table constants, as
+  integer milli-units throughout (`MG-2`: "all generator arithmetic is
+  integer" — no floats anywhere in this module).
+- `tau_milli(mask, a, b)` — `TAU[c][a][b]`, re-derived directly over
+  quarter-turn deltas from the cell's *current* mask rather than the
+  spec's `ori()`/`MASK[shape][o]` indirection (provably the same formula;
+  see `OPEN_QUESTIONS.md` OQ-3). Returns `None` (infinite) exactly when
+  `carries` is false for that pair, checked exhaustively against `carries`
+  itself for all 16 masks x 12 ordered pairs.
+- `TransitGraph.weighted_edges_from` / `TransitGraph.solve_cost` —
+  `edgeCost = TAU + STEP_MILLI`, and the Dijkstra that answers `SolveCost(s)`
+  as the `(R, L)` pair plus `C = 2R+L` (`SolveCost` NamedTuple). The very
+  first hop reuses `first_departures` and is zero-cost in `R`, consistent
+  with `OQ-1`'s treatment of departure vs. interior-node `carries`. Runs
+  one Dijkstra per spawn rather than `MG-3`'s "one reverse Dijkstra from the
+  Hub answers all four spawns" optimisation — that trick is deferred (see
+  "Not yet implemented" below), since it is a performance refinement for
+  the generation loop, not a correctness requirement.
+- See `OPEN_QUESTIONS.md` OQ-4 for a real tension in the spec's own text
+  (the Dijkstra edge weight and the reported scalar `C` use different `R`:`L`
+  weightings, 1:1 vs 2:1) and the reading implemented.
+- Tests pin down hand-computed `TAU` values for Straight/Elbow/Tee worked
+  examples (matching `TM-5`'s "CW==CCW on a Straight" and cross-checked
+  against `ACT`'s own 0/1000/1600/1000 table), and `solve_cost` on hand-built
+  boards: a zero-rotation Cross corridor, a one-rotation Straight corridor
+  (exact `R`/`L`/`C` pinned down, not just "some value"), an unreachable
+  board (`MG-6` fails), and a diamond with two equal-length routes where
+  only the cost model distinguishes which one Dijkstra must prefer.
+
+**`snail_labyrinth/rng.py`, new this increment** — spec section 3.6, `MG-24`:
+
+- `splitmix64`, `fnv1a64` — the two primitive mixing/hashing functions
+  every other formula in this module is built from.
+- `root_key`, `attempt_key`, `stream_seed`/`make_stream`, `cell_hash` — the
+  four formulas verbatim (`RootKey`, `AttemptKey(i)`, `Stream(label)`,
+  `CellHash(label,x,y)`), each a pure function of its arguments only.
+- `Pcg32` — a minimal PCG XSH-RR 64/32 generator (`next_u32`,
+  `next_below(n)` via unbiased rejection sampling), seeded by `Stream`'s
+  derived value. Reserved for genuinely sequential processes (darts,
+  accretion order, repair) per `MG-24`; nothing indexed by cell should ever
+  use it (`cell_hash` instead), and nothing in this module does.
+- Not yet wired to anything — this is foundational scaffolding for the
+  generator (layers 1-3) and for `CD-17`'s per-player card streams, both
+  future increments. No `MatchSeed`/`SettingsHash`/`GeneratorVersion`
+  plumbing or config schema exists yet to supply real values; tests exercise
+  the formulas directly with arbitrary integers.
+- `SettingsHash` itself (which settings it covers, the freeze-key exclusion
+  rule) is **not implemented** — there is no settings schema yet (`DS-*`,
+  a much later increment). This module only guarantees the property that
+  exclusion rule depends on: equal `SettingsHash` values always reproduce
+  the same `RootKey`.
+
 ### Not yet implemented
 
 Everything else. In particular:
@@ -92,11 +165,18 @@ Everything else. In particular:
 - `TM-4`, `TM-7` — trivial/rendering-only, nothing to implement in a headless
   core (Rock-is-mask-0 is already the only representation; `TM-7` is a
   rendering rule with no simulation-state counterpart).
-- Section 3 (`MG-*`) — map generation. **This is the next increment.**
-  Depends on `GE-*` (now implemented) for Hub/spawn/Apron cell sets and on
-  `TransitGraph` for `SolveCost` (needs the weighted `TAU`/`ACT` cost model
-  on top of the unweighted BFS built so far — a Dijkstra variant of
-  `TransitGraph`, not a rewrite of it).
+- Section 3 (`MG-*`) — map generation proper. `MG-2`, `MG-3`, `MG-24` are
+  done (above); **everything else in section 3 is the next increment**:
+  `MG-5`..`MG-15`'s concrete guarantees (nothing generates a map yet, so
+  there is nothing for them to check), the three-layer generator itself
+  (`MG-17`), dead-end repair (`MG-18`), the symmetry repair loop (`MG-19`),
+  placement search (`MG-20`), collectibles (`MG-21`-`MG-23`), and
+  `MapDigest` (`MG-24`'s last piece). Also deferred: `MG-3`'s "one reverse
+  Dijkstra from the Hub answers all four spawns at once" — the current
+  `solve_cost` runs one forward Dijkstra per spawn, which is semantically
+  identical but does 4 passes instead of 1; worth revisiting if/when
+  generation performance actually matters (the §3.3 accretion loop calls
+  this on every candidate rock placement).
 - Section 4 (`MV-*`) — the movement state machine. Depends on `GE-*` (Hub
   cells, Start Pads) and reuses `Board.usable_exits` for `resolveExit`
   (`MV-7`) — note `MV-7`/`MV-8` explicitly use `usableExits`, i.e. **plain
@@ -122,35 +202,46 @@ Everything else. In particular:
 
 ### Next increment
 
-**Map generation: `MG-1` .. `MG-24`.** This is the biggest single increment
-in the build order so far; consider splitting it further (e.g. layer 1+2
-placement first, then the rock-accretion/repair loop, then collectibles)
-rather than doing all of section 3 in one pass.
+**The map generator itself: `MG-5`, `MG-16`-`MG-23`.** The cost model and
+determinism primitives it needs now both exist (this increment); this is
+still the biggest remaining increment in the build order, so keep splitting
+it further rather than doing all of section 3 in one pass — e.g. layer 1+2
+placement first (a map with no rocks and no collectibles is already fully
+testable against `MG-6`/`MG-8`/`MG-11`/`MG-14`), then the rock-accretion/
+repair loop (`MG-17` layer 3, `MG-18`, `MG-19`), then collectibles
+(`MG-20`-`MG-23`), then `MapDigest` (`MG-24`'s last piece) and the
+determinism/cross-platform golden tests.
 
-- `MG-2`/`MG-3`: the weighted cost model (`TAU`, `ACT`, `SolveCost`) is a
-  Dijkstra variant over the *same* `G_T` nodes `transit.py` already defines
-  — extend `TransitGraph` (e.g. a `solve_costs()` method doing one reverse
-  Dijkstra from the Hub) rather than duplicating the graph structure.
-  Everything must stay integer arithmetic (`MG-2`: "All generator arithmetic
-  is integer").
 - `MG-5`: `geometry.place_fixed_geometry` already does the "Hub/Start Pads
   forced before any other placement" step this increment needs as its
   starting point.
-- `MG-16`-`MG-19`: layer 1 (C4-symmetric corridors, reusing `geometry.rho`
-  to replicate a quarter-turn fundamental domain), layer 2 (stateless
-  per-cell hashing — `CellHash` per `MG-24`, not Python's `random` module,
-  so results are reproducible across platforms), layer 3 (rock accretion,
-  validated via `TransitGraph` on every accept), dead-end repair (`MG-18`),
-  and the symmetry repair loop (`MG-19`).
-- `MG-24`: determinism scaffolding (`splitmix64`, `fnv1a64`, `pcg32`,
-  labelled stream splitting) is foundational and probably belongs in its
-  own small module (e.g. `rng.py`) that `MG-*`'s generator and later the
-  per-player card streams (`CD-17`) both import, rather than being
-  reimplemented per-caller.
-- Tests: `MG-5`..`MG-15`'s guarantees hold for generated maps; regenerate
-  twice from the same seed and compare `MapDigest` (determinism); the 4
-  spawns' `SolveCost` spread satisfies `MG-11`, reusing `geometry.py`'s
-  already-tested spawn/Hub cell sets.
+- `MG-16`-`MG-17` layers 1-2: layer 1 is C4-symmetric corridors, reusing
+  `geometry.rho` to replicate a quarter-turn fundamental domain; layer 2 is
+  stateless per-cell hashing — `rng.cell_hash`, already built, not Python's
+  `random` module, so results are reproducible across platforms. The
+  `type(c)`/`ori(c)` weighted-pick formulas in `MG-17` need a
+  `weighted_pick(hash_value, weights)` helper that doesn't exist yet
+  (`CellHash` returns a raw integer; turning that into a weighted choice
+  deterministically is a small new piece, not something `rng.py` already
+  provides).
+- `MG-17` layer 3, `MG-18`, `MG-19`: rock accretion (validated via
+  `TransitGraph.solve_cost`/`reachable_to_hub` on every accept — both
+  already exist), dead-end repair, and the symmetry repair loop. These are
+  genuinely sequential (accretion order, repair candidates) so they should
+  draw from `rng.make_stream`, not `cell_hash`.
+- `MG-20`-`MG-23`: collectible placement (the dart-throwing relaxation
+  ladder, `detour()` reusing the same Dijkstra machinery as `solve_cost`
+  but from a forward direction, C4-quadruple placement reusing `geometry.rho`).
+- `MG-24`'s remaining piece: `MapDigest` (FNV-1a 64 over the generated
+  board + collectibles + spawns) and the `RootKey`/`AttemptKey` plumbing
+  that actually drives one end-to-end `generate(seed, settings) -> Board`
+  entry point — nothing calls `rng.py` yet; this is where it starts getting
+  called.
+- Tests: `MG-5`..`MG-15`'s guarantees hold for generated maps (start with a
+  handful of fixed seeds per size, then widen); regenerate twice from the
+  same seed and compare `MapDigest` (determinism); the 4 spawns' `SolveCost`
+  spread satisfies `MG-11`, reusing `geometry.py`'s already-tested
+  spawn/Hub cell sets and this increment's `solve_cost`.
 
 ### How to verify this increment
 
@@ -159,5 +250,6 @@ cd reference
 python3 -m unittest discover -v
 ```
 
-Last run: 64 tests, all passing, 0 failures, 0 errors (44 from increment 1
-+ 20 new in `test_geometry.py`; see the PR for the captured output).
+Last run: 98 tests, all passing, 0 failures, 0 errors (64 carried over from
+increments 1-2 + 22 new in `test_rng.py` + 14 new in `test_transit.py`'s
+`WeightedCostModelTests`; see the PR for the captured output).

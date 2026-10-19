@@ -9,7 +9,15 @@ import unittest
 from collections import deque
 
 from snail_labyrinth.tiles import ALL_DIRS, Board, E, GridPos, N, S, W, delta, opp
-from snail_labyrinth.transit import TransitGraph, TransitNode, carries
+from snail_labyrinth.transit import (
+    ACT_MILLI,
+    STEP_MILLI,
+    SolveCost,
+    TransitGraph,
+    TransitNode,
+    carries,
+    tau_milli,
+)
 
 # The 12 ordered pairs of distinct single-bit directions, split by TM-11's
 # "straight-through" vs. "turn" classification.
@@ -208,6 +216,139 @@ class TransitGraphReachabilityTests(unittest.TestCase):
         b.set_mask(p, 15)
         g = TransitGraph(b)
         self.assertTrue(g.reachable_to_hub(p, {p}))
+
+
+class WeightedCostModelTests(unittest.TestCase):
+    """MG-2, MG-3: the weighted cost model (`TAU`, `ACT`, `SolveCost`) laid
+    on top of G_T. See OPEN_QUESTIONS.md OQ-3 and OQ-4 for the two
+    interpretive notes this part of the spec required."""
+
+    def test_MG2_tau_milli_is_none_exactly_when_carries_is_false(self):
+        """TAU must be infinite exactly where carries() is false, and finite
+        exactly where it's true -- exhaustive over all 16 masks x 12 ordered
+        direction pairs."""
+        for m in range(16):
+            for a, b in ALL_ORDERED_PAIRS:
+                is_finite = tau_milli(m, a, b) is not None
+                self.assertEqual(is_finite, carries(m, a, b), f"mask={m} a={a} b={b}")
+
+    def test_MG2_tau_milli_is_symmetric(self):
+        for m in range(16):
+            for a, b in ALL_ORDERED_PAIRS:
+                self.assertEqual(tau_milli(m, a, b), tau_milli(m, b, a))
+
+    def test_MG2_tau_milli_is_zero_when_the_pair_is_already_open(self):
+        """If both openings are already present on the current mask, no
+        rotation card is needed at all (ACT[0] == 0)."""
+        for m in range(16):
+            for a, b in ALL_ORDERED_PAIRS:
+                if (m & a) and (m & b):
+                    self.assertEqual(tau_milli(m, a, b), 0, f"mask={m} a={a} b={b}")
+
+    def test_MG2_cross_never_needs_a_rotation(self):
+        """A Cross (mask 15) already carries every pair at every rotation,
+        so TAU is always 0 -- cheapest possible, matching ACT[0]."""
+        for a, b in ALL_ORDERED_PAIRS:
+            self.assertEqual(tau_milli(15, a, b), 0)
+
+    def test_MG2_straight_needs_exactly_one_card_to_flip_axis(self):
+        """TM-5: cw(5) == ccw(5) == 10 -- a Straight needs exactly one
+        rotation card (either CW or CCW, same result) to go from N-S to
+        E-W, so TAU for the off-axis pair is ACT[1], not ACT[2] or ACT[3]."""
+        self.assertEqual(tau_milli(5, N, S), 0)  # already N-S
+        self.assertEqual(tau_milli(5, W, E), ACT_MILLI[1])
+        self.assertEqual(tau_milli(10, W, E), 0)  # already E-W
+        self.assertEqual(tau_milli(10, N, S), ACT_MILLI[1])
+
+    def test_MG2_elbow_worked_example(self):
+        """Elbow mask 3 (N,E). The opposite corner pair (S,W) is only ever
+        open after exactly 2 quarter-turns (mask 12), and no other delta
+        reaches a mask with both S and W open, so TAU must be ACT[2]
+        (1600), not 2 * ACT[1] (2000)."""
+        self.assertEqual(tau_milli(3, N, E), 0)
+        self.assertEqual(tau_milli(3, S, W), ACT_MILLI[2])
+
+    def test_MG2_tee_worked_example(self):
+        """TEE mask 7 (missing W, i.e. N,E,S open). The pair (N, W) first
+        becomes available after 2 turns (mask 13, missing E) and again
+        after 3 (mask 11, missing S) -- both carry {N, W}, so TAU must take
+        the cheaper of the two (ACT[3] == 1000), not ACT[2] (1600)."""
+        self.assertEqual(tau_milli(7, N, E), 0)
+        self.assertEqual(tau_milli(7, N, W), ACT_MILLI[3])
+
+    def test_MG6_solve_cost_is_zero_when_already_at_the_hub(self):
+        b = Board(2)
+        p = GridPos(0, 0)
+        b.set_mask(p, 15)
+        g = TransitGraph(b)
+        self.assertEqual(g.solve_cost(p, {p}), SolveCost(0, 0))
+
+    def test_MG6_solve_cost_is_none_when_unreachable(self):
+        b = Board(3)
+        start, hub_cell = GridPos(0, 0), GridPos(2, 2)
+        b.set_mask(start, 15)
+        b.set_mask(hub_cell, 15)
+        # Everything else stays mask 0 (Rock): no route at all.
+        g = TransitGraph(b)
+        self.assertIsNone(g.solve_cost(start, {hub_cell}))
+
+    def test_MG2_solve_cost_decomposes_R_and_L_on_a_corridor_needing_one_rotation(self):
+        """A straight-line corridor start -> mid -> hub, 3 cells, travelling
+        East each hop. The middle tile is a Straight on the wrong axis
+        (mask 5, N-S) -- carrying the required (W, E) pair costs exactly one
+        rotation card (see test_MG2_straight_needs_exactly_one_card_to_flip_axis).
+        Expected: L = 2 tiles travelled, R = 1 card action, no cheaper route
+        exists (it's the only path), so SolveCost is pinned down exactly.
+        """
+        b = Board(3)
+        start, mid, hub_cell = GridPos(0, 0), GridPos(1, 0), GridPos(2, 0)
+        b.set_mask(start, 15)
+        b.set_mask(mid, 5)  # STRAIGHT, currently N-S; path needs W-E
+        b.set_mask(hub_cell, 15)
+        g = TransitGraph(b)
+        cost = g.solve_cost(start, {hub_cell})
+        self.assertIsNotNone(cost)
+        self.assertEqual(cost.tiles, 2)
+        self.assertEqual(cost.r_milli, ACT_MILLI[1])
+        self.assertEqual(cost.l_milli, 2 * STEP_MILLI)
+        self.assertEqual(cost.c_milli, 2 * ACT_MILLI[1] + 2 * STEP_MILLI)
+
+    def test_MG2_solve_cost_is_zero_rotation_cost_through_an_all_cross_corridor(self):
+        """A Cross never needs a rotation (test_MG2_cross_never_needs_a_rotation),
+        so a corridor of N crosses costs R=0 and L=N tiles exactly."""
+        n = 6
+        b = Board(n)
+        for x in range(n):
+            b.set_mask(GridPos(x, 0), 15)
+        start, hub_cell = GridPos(0, 0), GridPos(n - 1, 0)
+        g = TransitGraph(b)
+        cost = g.solve_cost(start, {hub_cell})
+        self.assertEqual(cost, SolveCost(0, (n - 1) * STEP_MILLI))
+        self.assertEqual(cost.tiles, n - 1)
+
+    def test_MG2_solve_cost_prefers_the_cheaper_of_two_equal_length_routes(self):
+        """A diamond: start=(0,0), hub=(1,1), two alternate 2-hop routes via
+        (1,0) or (0,1). The (1,0) route needs an Elbow rotated 2 quarter-turns
+        to carry (W, S) -- ACT[2] == 1600 -- while the (0,1) route is already
+        a Cross and carries everything for free. Equal tile length (2 hops
+        either way) isolates the rotation cost: Dijkstra over `edgeCost`
+        must prefer the free route, not whichever is enumerated first.
+        """
+        b = Board(2)
+        start, hub_cell = GridPos(0, 0), GridPos(1, 1)
+        via_elbow, via_cross = GridPos(1, 0), GridPos(0, 1)
+        b.set_mask(start, 15)
+        b.set_mask(via_elbow, 3)  # ELBOW (N,E); carrying (W,S) costs ACT[2] = 1600
+        b.set_mask(via_cross, 15)  # CROSS; carries (N,E) for free
+        b.set_mask(hub_cell, 15)
+        g = TransitGraph(b)
+
+        # Pin down the elbow route's own cost first, so the test documents
+        # *why* the diamond's shortest path must avoid it.
+        self.assertEqual(tau_milli(3, W, S), ACT_MILLI[2])
+
+        cost = g.solve_cost(start, {hub_cell})
+        self.assertEqual(cost, SolveCost(0, 2 * STEP_MILLI))
 
 
 if __name__ == "__main__":
