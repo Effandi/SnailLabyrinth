@@ -1,0 +1,10 @@
+# Python (reference/ — the headless simulation oracle)
+__pycache__/
+*.pyc
+.mypy_cache/
+
+# Godot (BO-3), added ahead of the engine build so caches never land in history
+.godot/
+.import/
+export_presets.cfg
+android/build/
