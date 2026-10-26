@@ -27,11 +27,14 @@ reference/
                        its weighted SolveCost model
     geometry.py        GE-1 .. GE-8: Hub, Apron, spawns, Start Pads
     rng.py             MG-24: determinism/reproducibility primitives
+    generator.py       MG-16, MG-17 layers 1-2: C4-symmetric corridors and
+                       the free interior (no rocks yet -- see PROGRESS.md)
   tests/
     test_tiles.py
     test_transit.py
     test_geometry.py
     test_rng.py
+    test_generator.py
   OPEN_QUESTIONS.md     ambiguities found in the spec and how they were resolved
   PROGRESS.md           what's implemented, what's next
 ```

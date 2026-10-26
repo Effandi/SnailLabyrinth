@@ -175,3 +175,84 @@ reveals that this disagreement actually changes which map configurations
 pass or fail those guarantees, revisit this entry before that increment
 ships — it is the one place the two SolveCost formulas could, in principle,
 pick different "optimal" routes.
+
+---
+
+## OQ-5 — `MG-17` layer 1's "radius-2 wedge" has no concrete definition
+
+**The literal text:** "The 4 corridor regions (Start Pad + a radius-2
+wedge) and the Apron ring are generated once in a quarter-turn fundamental
+domain and replicated by the C4 orbit (`GE-6`)." Neither "radius-2" nor
+"wedge" is defined elsewhere — there is no stated distance metric, and no
+stated shape for the region beyond "wedge" (as opposed to, say, a full
+disc or a rectangle).
+
+**Resolution implemented (`generator.canonical_corridor_wedge`):**
+"radius-2" read as **Chebyshev distance <= 2** from the spawn cell. This
+matches the document's own house convention for grid distance elsewhere —
+`CD-9`: "Rock range: Chebyshev 3" — rather than Manhattan or Euclidean
+distance, neither of which this document uses anywhere else. "Wedge" is
+read as "every in-bounds cell within that radius, minus whatever the Hub/
+Apron/Spawn-pad geometry already claims" — i.e. the full square
+neighbourhood clipped by what's already reserved, not a quarter-disc or
+other explicitly wedge-shaped subset, since nothing in the text gives a
+boundary for a narrower reading and the clipping against reserved cells
+already prevents overlap with the Hub/Apron/other spawns at every preset
+size (checked directly: `CorridorWedgeTests` in `tests/test_generator.py`).
+
+**What would falsify this reading:** a later increment (the rock-accretion
+loop, `MG-17` layer 3, or the repair loop, `MG-19`) finding that the
+radius-2 region is either too large (crowding out layer 2's "free"
+interior near the spawn) or too small (failing to anchor enough of the
+route cost near each spawn to make `MG-11`/`MG-14` achievable, which is
+the whole stated point of layer 1) would be a sign to revisit the radius
+or the "full square, clipped" shape, not necessarily the Chebyshev metric
+itself.
+
+---
+
+## OQ-6 — layers 1-2 alone do not reliably satisfy `MG-6`, `MG-8`, `MG-11`,
+## or `MG-14`; this corrects the previous increment's `PROGRESS.md`
+
+The consolidated PR's `PROGRESS.md` (increment 3) described the next
+increment's deliverable as "a map with no rocks and no collectibles [that]
+is already fully testable against `MG-6`/`MG-8`/`MG-11`/`MG-14`". Having
+now built layers 1-2 and measured it empirically (fixed, deterministic
+seed sweeps; see `tests/test_generator.py`'s
+`MG6PreRepairCharacterizationTests` and the numbers below), that phrasing
+is true only in the narrow sense that the *code path* to check these
+guarantees now exists and runs without error — it is not true that the
+guarantees themselves are expected to *hold* yet:
+
+- **`MG-6`** (every spawn's `SolveCost` finite): ~97.75% of spawns across
+  40 seeds x all 5 preset sizes (18/800 unsolved in the measurement that
+  produced this note). A concrete, reproducible failure — `N=8`, seed 31,
+  spawn `S0` — is pinned down as
+  `test_a_concrete_pre_repair_failure_exists`. This is exactly the failure
+  mode `MG-18` ("dead-end repair is mandatory ... a 10% dead-end field
+  alone seals spawns") describes, and it occurs with **zero rocks
+  anywhere on the board** — layer 2's ~10% Dead-End weight is sufficient
+  on its own, without any rock accretion at all.
+- **`MG-8`** (`C_min <= C(s) <= C_max`): ~77% pass rate (903/1176
+  reachable spawns, same sweep). Expected: layer 3's accretion loop
+  deliberately grows rocks *until* `mean C >= C_target` (`MG-17`), so a
+  rock-free board has no mechanism pushing cost up toward the target band
+  at all; passing this often is incidental to layer 2's Dead-End/Elbow mix
+  already adding some rotation cost, not a guarantee.
+- **`MG-11`** (`max C / min C <= 1.15`): ~30% pass rate (88/291 boards
+  where all 4 spawns were reachable). Expected and explicitly foretold by
+  the spec's own framing: `GE-6` says layer 1's symmetry is what makes
+  `MG-11` "achievable rather than aspirational" — not automatically true —
+  and `MG-19`'s repair loop exists specifically to close the residual gap
+  layer 2's independently-hashed free interior reopens. Asserting `MG-11`
+  here would be asserting something the design does not yet claim.
+- **`MG-14`** (`|R(s) - mean R| <= 2`): not separately measured, but tied
+  to the same mechanism as `MG-11` and expected to be similarly unreliable
+  pre-repair.
+
+**No code change requested** — this is a documentation correction, not a
+bug. Recorded so the next scheduled run does not write assertion tests for
+`MG-6`/`MG-8`/`MG-11`/`MG-14` passing against a layers-1-2-only board, and
+instead treats them as the acceptance criteria for the *next* increment
+(`MG-18` dead-end repair, then `MG-19`'s repair loop, then layer 3's
+accretion actually reaching `C_target`) — see `reference/PROGRESS.md`.
