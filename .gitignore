@@ -1,0 +1,8 @@
+# Python (reference/ headless simulation core)
+__pycache__/
+*.pyc
+.mypy_cache/
+.pytest_cache/
+
+# Engine cache / build output and export-preset secrets land here in a
+# later increment (BO-3), once the Godot project exists.
