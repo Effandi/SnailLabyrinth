@@ -256,3 +256,92 @@ bug. Recorded so the next scheduled run does not write assertion tests for
 instead treats them as the acceptance criteria for the *next* increment
 (`MG-18` dead-end repair, then `MG-19`'s repair loop, then layer 3's
 accretion actually reaching `C_target`) — see `reference/PROGRESS.md`.
+
+---
+
+## OQ-7 — `MG-18`'s "deterministic hash order" could mean a stateless
+## per-cell hash or a draw from `MG-24`'s sequential "repair" stream
+
+**The tension.** `MG-18`'s own text says: "convert the frontier dead-end
+nearest the Hub component (**deterministic hash order**)." Separately,
+`MG-24` lists `repair` as one of the **sequential** stream labels
+("Streams: `types, orient, walls, gems, upgrades, repair`... Stateless
+hashing for anything indexed by cell... streams only for genuinely
+sequential processes (darts, accretion order, **repair**)"). Those two
+read as contradictory guidance for the *same* rule: `MG-18`'s own
+parenthetical names a *hash*, but `MG-24`'s classification puts "repair"
+specifically in the *stream* (sequential, stateful) bucket, not the
+stateless-hash bucket.
+
+**Resolution implemented (`repair.repair_dead_ends`):** every frontier
+Dead End candidate at a given repair step is tied for "nearest" (each is
+found by `find_frontier_dead_ends`, which only looks one step out from the
+current component — see that function's docstring), so the tie-break is
+the *entire* selection rule at that step, and `cell_hash(root_key, "repair",
+x, y)` is used as a plain, stateless sort key over the current candidate
+set. This is "deterministic hash order" taken completely literally.
+
+**Why this reading over `rng.make_stream(root_key, "repair").next_below(...)`:**
+a stateless hash keeps the result of repairing a board independent of
+*which* candidates happened to exist at a prior step (since the hash of a
+given cell never changes), whereas a sequential stream's output at step
+`k` depends on exactly how many draws happened at steps `0..k-1` — i.e. on
+how many frontier candidates existed each time, not just on cell identity.
+Nothing in `MG-18` suggests the choice of *which* cell to repair next
+should depend on the history of a repair run in that way; `MG-24`'s own
+listed purpose for streams ("genuinely sequential processes") reads more
+naturally as describing *accretion* and *darts*, where draws legitimately
+consume state across iterations for reasons the spec states explicitly
+(e.g. `MG-20`'s relaxation ladder), not as a blanket rule that the string
+"repair" in that list must mean *this* rule reaches for a stream. The
+`cell_hash` label argument is `"repair"` either way, so nothing about
+`MG-24`'s stream-vs-hash *label namespace* is violated by this choice.
+
+**What would falsify this reading:** if `MG-19`'s repair loop (not yet
+implemented — a different, later rule, also using the word "repair") turns
+out to need the sequential stream specifically (e.g. because its own text,
+unlike `MG-18`'s, does not say "hash order"), that would be independent
+evidence that `MG-24`'s `repair` stream label was reserved for `MG-19`,
+not `MG-18` — revisit this entry if so, but it would not retroactively
+change what `MG-18` itself asks for.
+
+---
+
+## OQ-8 — a frontier Dead End that four different directions press on at
+## once cannot be fit into a Tee (3 openings); `MG-18` doesn't say what to
+## do then
+
+**The tension.** `MG-18` says to convert a frontier Dead End "to a TEE" —
+unconditionally, with no fallback. A Tee has exactly 3 openings (`TM-3`).
+`find_frontier_dead_ends` can, in principle, accumulate up to 4 required
+directions for one cell: its own pre-existing single opening, plus up to
+3 more from distinct component neighbours each independently pressing an
+opening toward it from a different side. Four required directions cannot
+fit in a 3-opening shape.
+
+**Resolution implemented (`repair.choose_repair_mask`):** when exactly 4
+directions are required, the lowest-priority one in fixed `N, E, S, W`
+order is dropped, and the result is the Tee covering the other 3. The
+connection(s) that direction would have made are simply not realised on
+this repair step.
+
+**Why this is safe, not a correctness gap:** dropping a connection never
+*un-solves* anything — the cell was a Dead End a moment ago, carrying
+nothing as an interior path cell either way (`TM-11`); every connection
+the chosen Tee makes is strictly new. The dropped side, if it still
+matters, remains a legitimate frontier opportunity (that neighbour is
+still pressing an opening toward this now-Tee cell) — except this cell is
+no longer a Dead End, so `find_frontier_dead_ends` will never re-offer it.
+In practice this case has not been observed to matter: it requires three
+*distinct* component cells to each already independently happen to face
+the same single Dead End from three different sides, which is rare on the
+boards this increment's sweep covers (`tests/test_repair.py`'s
+`ChooseRepairMaskTests` covers the 4-required case directly as a unit
+test, since the full-generator sweep may never happen to exercise it).
+
+**What would falsify this reading:** if a future increment's measurement
+shows this truncation measurably hurts `MG-6`/`MG-11`, the fix would be to
+escalate to a Cross instead of a Tee in exactly the 4-required case —
+`MG-18`'s text would then be read as "Tee, except when nothing less than
+a Cross will do," which is a defensible fallback but not what the text
+says outright, so it is not implemented pre-emptively.
