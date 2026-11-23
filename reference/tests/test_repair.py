@@ -6,7 +6,7 @@ Each test cites the rule id(s) it verifies in its docstring.
 import itertools
 import unittest
 
-from snail_labyrinth.generator import generate_board
+from snail_labyrinth.generator import generate_layers_1_and_2
 from snail_labyrinth.geometry import hub_cells, place_fixed_geometry, spawns
 from snail_labyrinth.repair import (
     RepairOutcome,
@@ -246,11 +246,17 @@ class RepairDeadEndsIntegrationTests(unittest.TestCase):
 
 
 class RepairAgainstTheRealGeneratorTests(unittest.TestCase):
-    """MG-18 applied to real `generate_board` output (layers 1-2, no rocks
-    yet). Measures the actual target guarantee, `MG-6` (G_T reachability,
-    `TransitGraph.reachable_to_hub`) -- not block-free connectivity, which
-    is a strictly stronger bar this rule alone is not meant to clear (see
-    OPEN_QUESTIONS.md and PROGRESS.md).
+    """MG-18 applied to real `generate_layers_1_and_2` output (layers 1-2,
+    no rocks yet). Measures the actual target guarantee, `MG-6` (G_T
+    reachability, `TransitGraph.reachable_to_hub`) -- not block-free
+    connectivity, which is a strictly stronger bar this rule alone is not
+    meant to clear (see OPEN_QUESTIONS.md and PROGRESS.md).
+
+    Uses `generate_layers_1_and_2`, not `generate_board` -- `generate_board`
+    is now the full pipeline (it calls `repair_dead_ends` and layer 3
+    itself), so calling it here would both defeat the point of measuring
+    repair in isolation and make every board in this sweep pay for layer
+    3's accretion loop for no reason (see reference/PROGRESS.md).
     """
 
     def test_never_regresses_g_t_solvability(self):
@@ -266,7 +272,7 @@ class RepairAgainstTheRealGeneratorTests(unittest.TestCase):
             hub = hub_cells(n)
             for seed in range(40):
                 rk = root_key(seed, 0, 1)
-                board = generate_board(n, rk)
+                board = generate_layers_1_and_2(n, rk)
                 pre = {
                     s: TransitGraph(board).reachable_to_hub(s, hub) for s in spawns(n)
                 }
@@ -294,7 +300,7 @@ class RepairAgainstTheRealGeneratorTests(unittest.TestCase):
             hub = hub_cells(n)
             for seed in range(40):
                 rk = root_key(seed, 0, 1)
-                board = generate_board(n, rk)
+                board = generate_layers_1_and_2(n, rk)
                 repair_dead_ends(board, rk)
                 tg = TransitGraph(board)
                 for s in spawns(n):
@@ -314,7 +320,7 @@ class RepairAgainstTheRealGeneratorTests(unittest.TestCase):
         """
         n = 8
         rk = root_key(31, 0, 1)
-        board = generate_board(n, rk)
+        board = generate_layers_1_and_2(n, rk)
         hub = hub_cells(n)
         s0 = spawns(n)[0]
         outcome = repair_dead_ends(board, rk)

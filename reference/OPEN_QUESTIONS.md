@@ -345,3 +345,105 @@ escalate to a Cross instead of a Tee in exactly the 4-required case —
 `MG-18`'s text would then be read as "Tee, except when nothing less than
 a Cross will do," which is a defensible fallback but not what the text
 says outright, so it is not implemented pre-emptively.
+
+---
+
+## OQ-9 — `MG-17` layer 3's "ordered by hash" / "hash-chosen direction" vs
+## `MG-24`'s explicit "accretion order" sequential-stream listing
+
+**The tension, sharper than OQ-7's.** `MG-17` layer 3's own pseudocode
+says, in one short passage: `candidates = cells outside protected regions,
+ordered by hash`, then `grow a straight segment of length 2..4 from c in a
+hash-chosen direction`. Both explicitly say "hash." But `MG-24` lists
+`accretion order` by name as one of the processes streams are "reserved"
+for: "Labelled stream splitting... Streams: `types, orient, walls, gems,
+upgrades, repair`... streams only for genuinely sequential processes
+(**darts, accretion order, repair**)." Unlike OQ-7's "repair" (which could
+plausibly mean `MG-18` *or* the not-yet-implemented `MG-19`), "accretion
+order" has only one possible referent — `MG-17` layer 3's own candidate
+loop — so this is direct, unambiguous evidence that `MG-24` wants *this*
+rule's candidate iteration to consume a sequential stream, not a stateless
+per-cell hash. This is a stronger case for the stream reading than OQ-7's
+was.
+
+**Resolution implemented (`generator.generate_layer3`): stateless
+`CellHash`, three independent labels (`"walls"` for candidate order,
+`"walls_dir"` for growth direction, `"walls_len"` for segment length),
+consistent with OQ-7's precedent rather than `MG-24`'s stream listing.**
+Three reasons, weighed against the sharper tension above:
+
+1. **The local rule's own text is unambiguous and says "hash" twice in
+   the same short passage**, for both the two sub-decisions it explicitly
+   names (order, direction). A rule that meant "stream" for its own
+   mechanism would not plausibly phrase itself this way twice in a row.
+2. **A sequential stream for candidate *order* would make the result
+   order-of-discovery-dependent in a way deterministic hashing avoids**:
+   `MG-24`'s own stated purpose for stateless hashing — "the interior is
+   independent of iteration order" — is a correctness property worth
+   keeping for *which cells layer 3 even considers*, the same way it
+   matters for layer 2's types/orientations. A stream numbered off some
+   externally-fixed candidate list would still be deterministic, but only
+   as "deterministic given this exact enumeration order", a strictly
+   weaker and more fragile property than CellHash's "deterministic given
+   only `(label, x, y)`."
+3. **`MG-24`'s own stream-label list is evidently not a perfectly precise
+   taxonomy** — `OQ-7` already found "repair" ambiguous between two
+   different rules that both use the word. Given the list has already
+   been shown to be loosely drafted in one entry, a second entry
+   ("accretion order") being loose in a different way (naming the right
+   *rule* but the wrong *mechanism*, when that rule's own text says
+   "hash" twice) is the more parsimonious reading than treating `MG-24`'s
+   list as the more authoritative source and overriding `MG-17`'s own
+   explicit words.
+
+**What would falsify this reading:** if a future playtest-driven change to
+layer 3 needs candidate selection to depend on accretion history (e.g. "do
+not re-consider a cell adjacent to one already rejected this run" — a
+genuinely sequential, state-carrying rule), that would be real evidence
+`MG-24` meant a stream here after all, and this entry should be revisited
+before making that change. Nothing in `MG-17`'s present text asks for that,
+so it is not implemented pre-emptively.
+
+---
+
+## OQ-10 — `GE-3`'s "Apron... rockable" vs `MG-17`'s "protected from
+## rocks at generation **and at runtime**: HUB union APRON union..."
+
+**The tension.** `GE-3` (section 2.1) states plainly: "Apron cells are
+ordinary, contestable, rotatable, and **rockable** — that chokepoint is
+the most interesting blocking play in the game and blanket-immunising it
+deletes it. The unwinnable state is prevented instead by `CD-13`: a Rock
+placement that would leave the Hub with zero non-Rock apron cells is
+illegal." `MG-17` (section 3.3), introducing layer 3's accretion loop,
+says: "Protected from rocks at generation **and at runtime**: `HUB union
+APRON union StartPads union StartPad-inward-neighbours`." Read literally,
+these directly contradict each other on whether a *player's* Rock card
+(`CD-13`, not yet implemented) may ever land on an Apron cell at runtime.
+
+**Resolution implemented, scoped to what this increment actually
+builds.** This increment (`generate_layer3`, the *generator's own*
+rock-placement pass) only needs to resolve the **generation-time** half of
+this tension, where both rules agree: Apron is protected from rocks the
+*generator* places (`GE-3` is silent on generation-time placement; `MG-17`
+states it outright). `generator.protected_from_rocks` therefore includes
+Apron, matching `MG-17`'s literal list. `routes.exempt_cells` (`MG-7`,
+used for this increment's vertex-disjointness check) deliberately
+**excludes** Apron, matching `GE-3`'s "rockable" — because `MG-7`'s own
+stated purpose is defending routes against a *future player's* Rock
+placement, and a cell `GE-3` says *will* remain legally rockable needs
+exactly that defence, unlike Hub/Spawn/StartPad-inward which `GE-2`/`GE-8`
+place genuinely beyond any card's reach.
+
+**What is deliberately left unresolved:** whether `MG-17`'s "and at
+runtime" clause is simply wrong (a drafting error that should read
+"at generation" only, matching `GE-3`), or whether it is `GE-3` that is
+incomplete (e.g. only describing Apron cells *not already* part of an
+accreted rock segment, with `MG-17`'s runtime protection meant to apply
+only to generator-placed Apron rocks specifically — though layer 3 as
+built here never actually places one, since Apron is excluded from its
+candidates, making that reading currently vacuous anyway). This is
+squarely `CD-13`'s problem: the actual Rock-card legality predicate
+decides, at runtime, whether a target cell carrying `SPAWN_PAD` or
+similar is targetable, and `CD-13` is not implemented yet. Flagging here
+rather than guessing now, so the `CD-13` increment resolves it with the
+real targeting-legality code in front of it instead of in the abstract.

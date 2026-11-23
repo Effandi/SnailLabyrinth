@@ -29,11 +29,14 @@ reasoning and what would falsify it.
 
 from __future__ import annotations
 
-from typing import Dict, List, Sequence, Set, Tuple, TypeVar
+from typing import Dict, List, Optional, Sequence, Set, Tuple, TypeVar
 
-from .geometry import apron_cells, hub_cells, rho, spawns
+from .geometry import apron_cells, hub_cells, rho, spawns, start_pad_inward_neighbour
+from .repair import repair_dead_ends
 from .rng import cell_hash
-from .tiles import Board, GridPos, Shape, cw
+from .routes import has_two_vertex_disjoint_routes
+from .tiles import ALL_DIRS, Board, GridPos, Shape, cw, delta, shape_of
+from .transit import STEP_MILLI, TransitGraph
 
 T = TypeVar("T")
 
@@ -205,11 +208,17 @@ def generate_layer2(board: Board, root_key: int) -> None:
         board.set_mask(p, cell_mask(root_key, p.x, p.y))
 
 
-def generate_board(n: int, root_key: int) -> Board:
-    """Compose `MG-5`'s fixed geometry with layers 1-2 into a complete
-    board. No rocks and no collectibles exist yet (those are layer 3,
-    `MG-18`/`MG-19`, and `MG-20`-`MG-23` respectively) -- every non-Hub
-    cell has a real, open shape.
+def generate_layers_1_and_2(n: int, root_key: int) -> Board:
+    """Compose `MG-5`'s fixed geometry with layers 1-2 only -- no `MG-18`
+    dead-end repair, no layer 3 rock accretion. No rocks and no
+    collectibles exist on the result (those are `MG-18`/`MG-19` and
+    `MG-20`-`MG-23` respectively); every non-Hub cell has a real, open
+    shape.
+
+    Exists for callers (chiefly tests) that specifically need to
+    characterize layers 1-2 in isolation, pre-repair and pre-accretion --
+    see `reference/PROGRESS.md`. `generate_board` is the real, full
+    pipeline and is the one every other caller should use.
     """
     from .geometry import place_fixed_geometry
 
@@ -217,4 +226,149 @@ def generate_board(n: int, root_key: int) -> Board:
     place_fixed_geometry(board)
     generate_layer1(board, root_key)
     generate_layer2(board, root_key)
+    return board
+
+
+# MG-17 section 3.5's defaults table, per preset size N: (C_target in CU,
+# rock% ceiling). "These two columns are starting values to tune from
+# playtest, not measurements to preserve" (section 3.5) -- kept here as a
+# plain dict rather than wired to the (not-yet-implemented) developer
+# settings schema, section 10.
+ACCRETION_DEFAULTS: Dict[int, Tuple[int, float]] = {
+    8: (11, 0.12),
+    12: (20, 0.16),
+    16: (28, 0.18),
+    20: (35, 0.20),
+    24: (44, 0.20),
+}
+
+
+def protected_from_rocks(n: int) -> Set[GridPos]:
+    """`MG-17`: "Protected from rocks at generation ... HUB union APRON
+    union StartPads union StartPad-inward-neighbours."
+
+    Deliberately a *larger* set than `routes.exempt_cells` (`MG-7`):
+    Apron cells are protected from the *generator's own* rock placement,
+    but remain legally rockable by players at runtime (`GE-3`: "ordinary,
+    contestable, rotatable, and rockable"). See
+    `reference/OPEN_QUESTIONS.md` for the tension this reflects between
+    `GE-3` and `MG-17`'s own "and at runtime" wording, and why it does not
+    block this increment (a `CD-13` concern, not yet implemented).
+    """
+    cells: Set[GridPos] = set(hub_cells(n)) | set(apron_cells(n)) | set(spawns(n))
+    for k in range(4):
+        cells.add(start_pad_inward_neighbour(n, k))
+    return cells
+
+
+def _mean_solve_cost_milli(board: Board, hub: List[GridPos]) -> Optional[int]:
+    """Mean `SolveCost.c_milli` (`MG-2`) across the 4 spawns, kept in
+    integer milli-units throughout (`MG-2`: "all generator arithmetic is
+    integer"). Returns `None` the instant any spawn is unreachable --
+    `MG-6` failing for even one spawn makes "mean C" undefined, not just
+    large, since there is no finite cost to average in.
+    """
+    total = 0
+    count = 0
+    for s in spawns(board.n):
+        sc = TransitGraph(board).solve_cost(s, hub)
+        if sc is None:
+            return None
+        total += sc.c_milli
+        count += 1
+    return total // count
+
+
+def generate_layer3(board: Board, root_key: int) -> None:
+    """`MG-17` layer 3: rock accretion. Mutates `board` in place.
+
+    "candidates = cells outside protected regions, ordered by hash / for c
+    in candidates: if mean C >= C_target or rockFraction >= rockMax: break
+    / grow a straight segment of length 2..4 from c in a hash-chosen
+    direction / tentatively set to ROCK / if MG-6 and MG-7 still hold AND
+    mean C did not decrease: keep / else: revert whole segment."
+
+    Candidate order, growth direction, and segment length are each their
+    own stateless `CellHash` draw (labels `"walls"`, `"walls_dir"`,
+    `"walls_len"`) rather than a sequential stream -- the same reading
+    `repair.py` already gives `MG-18`'s "deterministic hash order" against
+    `MG-24`'s stream-label list (see `reference/OPEN_QUESTIONS.md` OQ-7,
+    and OQ-9 for why this rule's own "ordered by hash" / "hash-chosen"
+    wording is read the same way here).
+
+    If the pre-layer-3 board (post-`MG-18` repair) is not itself `MG-6`-
+    solvable, accretion does nothing: there is no finite baseline "mean C"
+    to improve on, and placing rocks against an undefined baseline would
+    be inventing a rule the spec does not state. This can legitimately
+    happen before `MG-19` (the symmetry/misorientation repair loop, a
+    later increment) exists -- see `reference/PROGRESS.md`.
+    """
+    n = board.n
+    hub = hub_cells(n)
+    c_target_cu, rock_max_fraction = ACCRETION_DEFAULTS[n]
+    c_target_milli = c_target_cu * STEP_MILLI
+
+    protected = protected_from_rocks(n)
+    candidates = [c for c in board.all_cells() if c not in protected]
+    candidates.sort(key=lambda c: cell_hash(root_key, "walls", c.x, c.y))
+
+    mean_c = _mean_solve_cost_milli(board, hub)
+    if mean_c is None:
+        return
+
+    total_cells = n * n
+
+    for c in candidates:
+        if mean_c >= c_target_milli:
+            break
+        rock_count = sum(
+            1 for cell in board.all_cells() if shape_of(board.mask_at(cell)) == Shape.ROCK
+        )
+        if rock_count / total_cells >= rock_max_fraction:
+            break
+
+        direction = ALL_DIRS[cell_hash(root_key, "walls_dir", c.x, c.y) % 4]
+        length = 2 + (cell_hash(root_key, "walls_len", c.x, c.y) % 3)
+
+        segment: List[GridPos] = []
+        cursor = c
+        placeable = True
+        for _ in range(length):
+            if not board.in_bounds(cursor) or cursor in protected:
+                placeable = False
+                break
+            if shape_of(board.mask_at(cursor)) == Shape.ROCK:
+                placeable = False
+                break
+            segment.append(cursor)
+            cursor = cursor + delta(direction)
+        if not placeable:
+            continue  # candidate cannot grow a full-length segment here
+
+        original = {cell: board.mask_at(cell) for cell in segment}
+        for cell in segment:
+            board.set_mask(cell, 0)
+
+        new_mean_c = _mean_solve_cost_milli(board, hub)
+        accept = (
+            new_mean_c is not None
+            and new_mean_c >= mean_c
+            and all(has_two_vertex_disjoint_routes(board, s, hub) for s in spawns(n))
+        )
+        if accept:
+            mean_c = new_mean_c  # type: ignore[assignment]
+        else:
+            for cell, m in original.items():
+                board.set_mask(cell, m)
+
+
+def generate_board(n: int, root_key: int) -> Board:
+    """The real, full map-generation pipeline: `MG-5`'s fixed geometry,
+    layers 1-2 (`generate_layers_1_and_2`), `MG-18` dead-end repair, then
+    layer 3 rock accretion. `MG-19` (the symmetry/misorientation repair
+    loop) is the next increment -- see `reference/PROGRESS.md`.
+    """
+    board = generate_layers_1_and_2(n, root_key)
+    repair_dead_ends(board, root_key)
+    generate_layer3(board, root_key)
     return board
