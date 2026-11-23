@@ -27,17 +27,31 @@ reference/
                        its weighted SolveCost model
     geometry.py        GE-1 .. GE-8: Hub, Apron, spawns, Start Pads
     rng.py             MG-24: determinism/reproducibility primitives
-    generator.py       MG-16, MG-17 layers 1-2: C4-symmetric corridors and
-                       the free interior (no rocks yet -- see PROGRESS.md)
+    generator.py       MG-16, MG-17 layers 1-3: C4-symmetric corridors, the
+                       free interior, and rock accretion; generate_board is
+                       the full pipeline (layers 1-2 + MG-18 repair + layer 3)
+    repair.py          MG-18: dead-end repair
+    flow.py            a small generic max-flow primitive (Edmonds-Karp)
+    routes.py          MG-7: two vertex-disjoint routes per spawn
   tests/
     test_tiles.py
     test_transit.py
     test_geometry.py
     test_rng.py
     test_generator.py
+    test_repair.py
+    test_flow.py
+    test_routes.py
+    test_layer3.py
   OPEN_QUESTIONS.md     ambiguities found in the spec and how they were resolved
   PROGRESS.md           what's implemented, what's next
 ```
+
+Running the full suite takes roughly a minute: layer 3's accept/revert
+loop runs a `solve_cost` Dijkstra and an `MG-7` max-flow check per
+candidate it tries, which is considerably more expensive per board than
+anything tested before it. See `PROGRESS.md` for the per-size timings this
+was measured against.
 
 ## Conventions
 

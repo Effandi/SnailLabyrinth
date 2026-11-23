@@ -1,5 +1,7 @@
 """Tests for snail_labyrinth.generator -- spec section 3.3, MG-16, MG-17
-layers 1-2.
+layers 1-2. Layer 3 (rock accretion, MG-17/MG-7) and the full generate_board
+pipeline (which now includes MG-18 repair and layer 3) are tested in
+tests/test_layer3.py.
 """
 
 import unittest
@@ -14,6 +16,7 @@ from snail_labyrinth.generator import (
     generate_board,
     generate_layer1,
     generate_layer2,
+    generate_layers_1_and_2,
     layer1_cells,
     type_mask,
     weighted_pick,
@@ -204,20 +207,19 @@ class Layer1Tests(unittest.TestCase):
 
 
 class GenerateBoardTests(unittest.TestCase):
-    def test_no_rock_anywhere_before_layer_3(self):
-        """This increment's deliverable: a map with no rocks and no
-        collectibles (PROGRESS.md) -- every cell must be a real, open
-        shape, since rocks are exclusively layer 3's job."""
-        for n in PRESET_SIZES:
-            rk = root_key(9, 0, 1)
-            board = generate_board(n, rk)
-            with self.subTest(n=n):
-                for cell in board.all_cells():
-                    self.assertNotEqual(board.mask_at(cell), 0, msg=f"rock at {cell}")
+    """`generate_board` is now the *full* pipeline (layers 1-2, MG-18
+    repair, layer 3 accretion) -- see tests/test_layer3.py for coverage of
+    what layer 3 itself adds (rocks, MG-6/MG-7 after accretion). This
+    class keeps the invariants that hold regardless of layer 3: the fixed
+    geometry is never touched, and generation is deterministic.
+    """
 
-    def test_hub_cells_untouched_by_layers_1_and_2(self):
+    def test_hub_cells_untouched_through_the_full_pipeline(self):
         """MG-5: Hub forced to mask 15 + FINISH_LOCKED before any other
-        placement, and nothing after should overwrite it."""
+        placement, and nothing after should overwrite it -- not layers
+        1-2, not MG-18 repair (which only ever touches Dead Ends, and the
+        Hub is forced to a Cross), and not layer 3 (Hub is in
+        `protected_from_rocks`)."""
         for n in PRESET_SIZES:
             rk = root_key(9, 0, 1)
             board = generate_board(n, rk)
@@ -226,7 +228,7 @@ class GenerateBoardTests(unittest.TestCase):
                     self.assertEqual(board.mask_at(cell), 15)
                     self.assertTrue(board.flags_at(cell) & TileFlags.FINISH_LOCKED)
 
-    def test_spawn_pads_untouched_by_layers_1_and_2(self):
+    def test_spawn_pads_untouched_through_the_full_pipeline(self):
         for n in PRESET_SIZES:
             rk = root_key(9, 0, 1)
             board = generate_board(n, rk)
@@ -252,17 +254,39 @@ class GenerateBoardTests(unittest.TestCase):
         b2 = generate_board(n, root_key(2, 0, 1))
         self.assertNotEqual(b1.mask, b2.mask)
 
+
+class Layer1And2OnlyTests(unittest.TestCase):
+    """Properties specific to layers 1-2 in isolation -- pre-MG-18-repair,
+    pre-layer-3. Uses `generate_layers_1_and_2` rather than `generate_board`
+    (which now also runs repair and accretion) so these keep testing
+    exactly what they always tested. See reference/PROGRESS.md.
+    """
+
+    def test_no_rock_anywhere_in_layers_1_and_2_alone(self):
+        """Every cell must be a real, open shape before layer 3 runs --
+        layer 2's type weights are explicitly "over non-rock cells"
+        (MG-17), and rocks are exclusively layer 3's job."""
+        for n in PRESET_SIZES:
+            rk = root_key(9, 0, 1)
+            board = generate_layers_1_and_2(n, rk)
+            with self.subTest(n=n):
+                for cell in board.all_cells():
+                    self.assertNotEqual(board.mask_at(cell), 0, msg=f"rock at {cell}")
+
     def test_statistical_type_distribution_over_the_free_interior(self):
         """Aggregate the free interior's realised shapes across several
         seeds at N=16 and check convergence to the authored weights --
-        exercising the full generate_board pipeline, not weighted_pick in
-        isolation."""
+        exercising layers 1-2 directly, not weighted_pick in isolation, and
+        not through MG-18 repair or layer 3 (both of which legitimately
+        change the realised Dead-End/Tee/Rock ratio -- this test is about
+        layer 2's own hash fidelity, see reference/PROGRESS.md).
+        """
         n = 16
         counts = {shape: 0 for shape, _ in DEFAULT_TYPE_WEIGHTS}
         total = 0
         reserved = set(hub_cells(n)) | set(spawns(n)) | layer1_cells(n)
         for seed in range(40):
-            board = generate_board(n, root_key(seed, 0, 1))
+            board = generate_layers_1_and_2(n, root_key(seed, 0, 1))
             for cell in board.all_cells():
                 if cell in reserved:
                     continue
@@ -281,7 +305,9 @@ class MG6PreRepairCharacterizationTests(unittest.TestCase):
     not about layers 1-2 alone. These tests characterize layers 1-2's
     solvability rate honestly instead of asserting a theorem this
     increment cannot yet deliver; see reference/OPEN_QUESTIONS.md OQ-6 and
-    reference/PROGRESS.md for why MG-18 (next increment) exists.
+    reference/PROGRESS.md for why MG-18 (now wired in) and MG-19 (still
+    ahead) exist. Uses `generate_layers_1_and_2` directly -- `generate_board`
+    would now mask these particular failures with repair and accretion.
     """
 
     def test_a_concrete_pre_repair_failure_exists(self):
@@ -293,7 +319,7 @@ class MG6PreRepairCharacterizationTests(unittest.TestCase):
         involved at all.
         """
         n = 8
-        board = generate_board(n, root_key(31, 0, 1))
+        board = generate_layers_1_and_2(n, root_key(31, 0, 1))
         tg = TransitGraph(board)
         hub = hub_cells(n)
         s0 = spawns(n)[0]
@@ -304,14 +330,15 @@ class MG6PreRepairCharacterizationTests(unittest.TestCase):
         Observed empirically at ~97.75% (18 unsolved spawns of 800) when
         this test was written; asserting a generous 90% lower bound here
         catches a gross regression without pretending layers 1-2 alone
-        reach the spec's actual guarantee (which needs MG-18).
+        reach the spec's actual guarantee (which needs MG-18, and now
+        also layer 3's own MG-6 enforcement in generate_board).
         """
         solved = 0
         total = 0
         for n in PRESET_SIZES:
             hub = hub_cells(n)
             for seed in range(40):
-                board = generate_board(n, root_key(seed, 0, 1))
+                board = generate_layers_1_and_2(n, root_key(seed, 0, 1))
                 tg = TransitGraph(board)
                 for s in spawns(n):
                     total += 1
